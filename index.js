@@ -5,9 +5,11 @@ import dotenv from 'dotenv'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 // Load server/.env first (preferred), then fall back to project-root .env without overriding.
+// On Vercel, env vars come from the dashboard so .env files simply won't exist.
 dotenv.config({ path: path.resolve(__dirname, '.env') })
 dotenv.config({ override: false })
 
@@ -30,23 +32,28 @@ const allowedOrigins = (CORS_ORIGINS
   : DEFAULT_ALLOWED_ORIGINS
 ).map((o) => o.replace(/\/$/, ''))
 
-if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
-  console.error('[mail] GMAIL_USER and GMAIL_APP_PASSWORD must be set in .env')
-  process.exit(1)
+const hasMailCreds = Boolean(GMAIL_USER && GMAIL_APP_PASSWORD)
+
+if (!hasMailCreds) {
+  console.error('[mail] GMAIL_USER and GMAIL_APP_PASSWORD are missing — send attempts will fail with 500')
 }
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: GMAIL_USER,
-    pass: GMAIL_APP_PASSWORD,
-  },
-})
+const transporter = hasMailCreds
+  ? nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: GMAIL_USER,
+        pass: GMAIL_APP_PASSWORD,
+      },
+    })
+  : null
 
-transporter.verify((err) => {
-  if (err) console.error('[mail] transporter verify failed:', err.message)
-  else console.log('[mail] Gmail transporter ready')
-})
+if (transporter) {
+  transporter.verify((err) => {
+    if (err) console.error('[mail] transporter verify failed:', err.message)
+    else console.log('[mail] Gmail transporter ready')
+  })
+}
 
 const app = express()
 app.use(
@@ -82,6 +89,9 @@ app.post('/api/contact', async (req, res) => {
   }
   if (!isEmail(email)) {
     return res.status(400).json({ ok: false, error: 'invalid email' })
+  }
+  if (!transporter) {
+    return res.status(500).json({ ok: false, error: 'mail transport not configured' })
   }
 
   const recipient = MAIL_TO || GMAIL_USER
@@ -129,6 +139,9 @@ app.post('/api/booking', async (req, res) => {
   if (!isEmail(email)) {
     return res.status(400).json({ ok: false, error: 'invalid email' })
   }
+  if (!transporter) {
+    return res.status(500).json({ ok: false, error: 'mail transport not configured' })
+  }
 
   const recipient = MAIL_TO || GMAIL_USER
 
@@ -167,8 +180,15 @@ app.post('/api/booking', async (req, res) => {
   }
 })
 
-app.get('/api/health', (_req, res) => res.json({ ok: true }))
+app.get('/api/health', (_req, res) => res.json({ ok: true, hasMailCreds }))
 
-app.listen(PORT, () => {
-  console.log(`[mail] server listening on http://localhost:${PORT}`)
-})
+// Only start a listener when run directly (local dev). On Vercel the file is
+// imported as a serverless handler and listen() must not be called.
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === __filename
+if (isMain) {
+  app.listen(PORT, () => {
+    console.log(`[mail] server listening on http://localhost:${PORT}`)
+  })
+}
+
+export default app
