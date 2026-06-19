@@ -2,15 +2,33 @@ import express from 'express'
 import cors from 'cors'
 import nodemailer from 'nodemailer'
 import dotenv from 'dotenv'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-dotenv.config()
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+// Load server/.env first (preferred), then fall back to project-root .env without overriding.
+dotenv.config({ path: path.resolve(__dirname, '.env') })
+dotenv.config({ override: false })
 
 const {
   GMAIL_USER,
   GMAIL_APP_PASSWORD,
   MAIL_TO,
   PORT = 5174,
+  CORS_ORIGINS,
 } = process.env
+
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://tinysmiles.netlify.app',
+  'http://localhost:5173',
+  'http://localhost:4173',
+]
+
+const allowedOrigins = (CORS_ORIGINS
+  ? CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+  : DEFAULT_ALLOWED_ORIGINS
+).map((o) => o.replace(/\/$/, ''))
 
 if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
   console.error('[mail] GMAIL_USER and GMAIL_APP_PASSWORD must be set in .env')
@@ -31,7 +49,19 @@ transporter.verify((err) => {
 })
 
 const app = express()
-app.use(cors())
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // Allow same-origin / curl / server-to-server (no Origin header)
+      if (!origin) return cb(null, true)
+      const normalized = origin.replace(/\/$/, '')
+      if (allowedOrigins.includes(normalized)) return cb(null, true)
+      console.warn('[cors] blocked origin:', origin)
+      return cb(new Error('Not allowed by CORS'))
+    },
+    methods: ['GET', 'POST'],
+  })
+)
 app.use(express.json({ limit: '100kb' }))
 
 const escapeHtml = (s = '') =>
